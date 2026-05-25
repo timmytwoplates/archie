@@ -1,0 +1,15 @@
+[Unit]
+Description=Archie Home Bot
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tim/home-bot
+EnvironmentFile=/home/tim/home-bot/.env
+ExecStart=/home/tim/home-bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
