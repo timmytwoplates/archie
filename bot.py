@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from abc import ABC, abstractmethod
+from commands import handle_command
 
 load_dotenv()
 
@@ -14,68 +15,22 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DB_PATH       = Path(os.getenv("DB_PATH", str(Path.home() / "home-bot" / "database.json")))
 ALLOWED_USERS = [u.strip() for u in os.getenv("ALLOWED_USERS", "").split(",") if u.strip()]
-PROVIDER      = os.getenv("LLM_PROVIDER", "gemini").lower()  # gemini | claude | openai | ollama
+PROVIDER      = os.getenv("LLM_PROVIDER", "gemini").lower()
+ENV_PATH      = Path(__file__).parent / ".env"
 
-# ── Provider credentials ──────────────────────────────────────────────────────
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
-CLAUDE_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
-OLLAMA_HOST     = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
-
-# ── Model overrides (optional — providers have sensible defaults) ──────────────
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+CLAUDE_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OLLAMA_HOST    = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 MODEL_OVERRIDE = os.getenv("LLM_MODEL", "")
 
 PROVIDER_DEFAULTS = {
-    "gemini": "gemini-2.0-flash",
+    "gemini": "gemini-2.5-flash-lite-preview-06-17",
     "claude": "claude-haiku-4-5-20251001",
     "openai": "gpt-4o-mini",
     "ollama": OLLAMA_MODEL,
 }
-
-# ── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM = """You are Archie, a home and family knowledge base assistant.
-
-Your ONLY jobs are storing facts and answering questions about them.
-
-RULE 1 — STORING:
-If the message contains ANY fact about the home or family, store it immediately.
-This includes: appliances, model numbers, filter sizes, people, preferences, gift ideas,
-paint colors, room info, vehicles, pets, warranties — anything factual about the household.
-Phrases like "my X is Y", "we have a Z", "my wife likes X", "the filter is 16x25x1" are ALL facts.
-Do NOT give advice. Do NOT ask clarifying questions. Just confirm and store.
-After storing, mention any interesting connections to existing entries (same brand, same room, etc).
-
-RULE 2 — ANSWERING:
-If the message is a question, you MUST scan EVERY SINGLE entry in the database.
-Do NOT stop after finding one match. List ALL matches.
-"What appliances do I have?" = list every entry with category=appliance. ALL of them.
-"What LG stuff do I have?" = list every entry where brand=LG. ALL of them.
-"What's in the laundry room?" = list every entry where location=laundry room. ALL of them.
-"Gift ideas for my wife?" = pull her likes, dislikes, and gift ideas from her person entry.
-If there are 5 matching entries, return all 5. Never summarize or omit entries.
-
-RULE 3 — CASUAL:
-If it's just chat, respond naturally. No store block needed.
-
-Current database:
---- START ---
-{database}
---- END ---
-
-When storing, end your reply with this block using these EXACT delimiters:
-<<STORE>>
-{{{{"category":"appliance","item":"washing machine","brand":"LG","model":"WM4000HWA","location":"laundry room","tags":["laundry room","appliance"]}}}}
-<<ENDSTORE>>
-
-Categories: appliance | person | preference | filter | vehicle | pet | room | maintenance | gift | misc
-
-Person example:
-<<STORE>>
-{{{{"category":"person","name":"Sarah","relationship":"wife","likes":["tulips","sunflowers"],"dislikes":["carnations"],"gift_ideas":["cookbook","garden tools"],"tags":["family"]}}}}
-<<ENDSTORE>>
-
-Only include relevant fields. Always use double quotes. Keep your reply to 2-3 sentences max before the store block."""
 
 # ── Database ──────────────────────────────────────────────────────────────────
 def load_db() -> dict:
@@ -106,6 +61,49 @@ def db_to_text(db: dict) -> str:
         lines.append(" | ".join(parts))
     return "\n".join(lines)
 
+# ── System prompt ─────────────────────────────────────────────────────────────
+SYSTEM = """You are Archie, a home and family knowledge base assistant.
+
+Your ONLY jobs are storing facts and answering questions about them.
+
+RULE 1 — STORING:
+If the message contains ANY fact about the home or family, store it immediately.
+This includes: appliances, model numbers, filter sizes, people, preferences, gift ideas,
+paint colors, room info, vehicles, pets, warranties — anything factual about the household.
+Phrases like "my X is Y", "we have a Z", "my wife likes X", "the filter is 16x25x1" are ALL facts.
+Do NOT give advice. Do NOT ask clarifying questions. Just confirm and store.
+After storing, mention any interesting connections to existing entries.
+
+RULE 2 — ANSWERING:
+Scan EVERY SINGLE entry in the database before answering. Do NOT stop at the first match.
+List ALL matching entries — never omit any.
+"What appliances do I have?" = list EVERY entry with category=appliance.
+"What LG stuff?" = list EVERY entry where brand=LG.
+"What's in the laundry room?" = list EVERY entry where location=laundry room.
+"Gift ideas for my wife?" = pull her likes, dislikes, and gift ideas.
+If there are 5 matching entries, return all 5.
+
+RULE 3 — CASUAL: respond naturally. No store block needed.
+
+Current database:
+--- START ---
+{database}
+--- END ---
+
+When storing, end your reply with this block using EXACT delimiters:
+<<STORE>>
+{{"category":"appliance","item":"washing machine","brand":"LG","model":"WM4000","location":"laundry room","tags":["laundry room"]}}
+<<ENDSTORE>>
+
+Categories: appliance | person | preference | filter | vehicle | pet | room | maintenance | gift | misc
+
+Person example:
+<<STORE>>
+{{"category":"person","name":"Sarah","relationship":"wife","likes":["tulips"],"dislikes":["carnations"],"gift_ideas":["cookbook"],"tags":["family"]}}
+<<ENDSTORE>>
+
+Only include relevant fields. Always use double quotes. Keep reply to 2-3 sentences before the store block."""
+
 # ── LLM Providers ─────────────────────────────────────────────────────────────
 class LLMProvider(ABC):
     @abstractmethod
@@ -127,7 +125,7 @@ class GeminiProvider(LLMProvider):
         async with aiohttp.ClientSession() as s:
             async with s.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as r:
                 raw = await r.text()
-                print(f"[Gemini raw]: {raw[:400]}")
+                print(f"[Gemini]: {raw[:300]}")
                 data = json.loads(raw)
                 return data["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -137,7 +135,6 @@ class ClaudeProvider(LLMProvider):
         self.model   = MODEL_OVERRIDE or PROVIDER_DEFAULTS["claude"]
 
     async def complete(self, system: str, user: str) -> str:
-        url = "https://api.anthropic.com/v1/messages"
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -150,9 +147,9 @@ class ClaudeProvider(LLMProvider):
             "messages": [{"role": "user", "content": user}]
         }
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            async with s.post("https://api.anthropic.com/v1/messages", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as r:
                 raw = await r.text()
-                print(f"[Claude raw]: {raw[:400]}")
+                print(f"[Claude]: {raw[:300]}")
                 data = json.loads(raw)
                 return data["content"][0]["text"]
 
@@ -162,7 +159,6 @@ class OpenAIProvider(LLMProvider):
         self.model   = MODEL_OVERRIDE or PROVIDER_DEFAULTS["openai"]
 
     async def complete(self, system: str, user: str) -> str:
-        url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -176,9 +172,9 @@ class OpenAIProvider(LLMProvider):
             ]
         }
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            async with s.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as r:
                 raw = await r.text()
-                print(f"[OpenAI raw]: {raw[:400]}")
+                print(f"[OpenAI]: {raw[:300]}")
                 data = json.loads(raw)
                 return data["choices"][0]["message"]["content"]
 
@@ -200,7 +196,7 @@ class OllamaProvider(LLMProvider):
         async with aiohttp.ClientSession() as s:
             async with s.post(f"{self.host}/api/chat", json=payload, timeout=aiohttp.ClientTimeout(total=180)) as r:
                 raw = await r.text()
-                print(f"[Ollama raw]: {raw[:400]}")
+                print(f"[Ollama]: {raw[:300]}")
                 data = json.loads(raw)
                 return data["message"]["content"]
 
@@ -225,7 +221,7 @@ def extract_store(response: str) -> dict | None:
         raw = json.loads(cleaned)
         return {k: v for k, v in raw.items() if v not in (None, "", [], {})}
     except Exception as e:
-        print(f"⚠️  Store parse error: {e} | block: {match.group(1)[:200]}")
+        print(f"⚠️  Store parse error: {e}")
         return None
 
 def clean_response(response: str) -> str:
@@ -241,7 +237,7 @@ llm     = get_provider()
 async def on_ready():
     db = load_db()
     print(f"✅ Archie online as {client.user}")
-    print(f"   Provider: {PROVIDER} | DB entries: {len(db['entries'])}")
+    print(f"   Provider: {PROVIDER} | Model: {MODEL_OVERRIDE or PROVIDER_DEFAULTS.get(PROVIDER,'?')} | Entries: {len(db['entries'])}")
 
 @client.event
 async def on_message(message: discord.Message):
@@ -251,47 +247,33 @@ async def on_message(message: discord.Message):
         if str(message.author.id) not in ALLOWED_USERS and str(message.author.name) not in ALLOWED_USERS:
             return
 
-    # Simple text commands
-    if message.content.strip().lower() in ["!reset", "!clear"]:
-        db = load_db()
-        db["entries"] = []
-        save_db(db)
-        await message.reply("🗑️ Database cleared.")
+    content = message.content.strip()
+    print(f"\n📨 {message.author}: {content}")
+
+    # ── Command handling ──────────────────────────────────────────────────────
+    if content.startswith("!"):
+        db    = load_db()
+        reply = await handle_command(message, content, db, save_db, load_db, ENV_PATH)
+        if reply:
+            for i in range(0, len(reply), 1900):
+                await message.reply(reply[i:i+1900])
         return
 
-    if message.content.strip().lower() in ["!count", "!status"]:
-        db = load_db()
-        await message.reply(f"📊 {len(db['entries'])} entries in database.")
-        return
-
-    if message.content.strip().lower() in ["!dump", "!list"]:
-        db = load_db()
-        if not db["entries"]:
-            await message.reply("Database is empty.")
-            return
-        text = db_to_text(db)
-        await message.reply(f"```\n{text[:1800]}\n```")
-        return
-
-    print(f"\n📨 {message.author}: {message.content}")
-
+    # ── LLM handling ──────────────────────────────────────────────────────────
     async with message.channel.typing():
         db     = load_db()
+        count  = len(db.get("entries", []))
+        hint   = f"[There are {count} total entries in the database. When listing, return ALL matches.]\n\n"
         system = SYSTEM.format(database=db_to_text(db))
 
-        # Count total entries so we can hint the model
-        entry_count = len(db.get('entries', []))
-        hint = f"[There are {entry_count} total entries in the database. When listing, return ALL matches.]"
-        augmented_msg = f"{hint}\n\n{message.content}"
-
         try:
-            response = await llm.complete(system, augmented_msg)
+            response = await llm.complete(system, hint + content)
         except Exception as e:
             print(f"❌ LLM error: {e}")
             await message.reply(f"❌ LLM error: {e}")
             return
 
-        print(f"💬 Response: {response[:300]}")
+        print(f"💬 {response[:300]}")
 
         store_data = extract_store(response)
         if store_data:
@@ -306,3 +288,4 @@ async def on_message(message: discord.Message):
             await message.reply(reply[i:i+1900])
 
 client.run(DISCORD_TOKEN)
+
